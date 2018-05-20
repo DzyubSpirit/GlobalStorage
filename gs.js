@@ -14,6 +14,7 @@ const submodules = [
   'mongodb.provider', 'mongodb.cursor',
   'localstorage.provider',
   'indexeddb.provider', 'postponed.cursor',
+  'transaction',
 ];
 
 const lib = {};
