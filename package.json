@@ -33,9 +33,11 @@
     "./node_modules/mkdirp": false
   },
   "dependencies": {
-    "metarhia-common": "^0.0.27",
+    "fake-indexeddb": "^2.0.4",
+    "localStorage": "^1.0.3",
+    "metarhia-common": "git+https://github.com/DzyubSpirit/common.git",
     "metarhia-jstp": "^1.1.0",
-    "metasync": "^0.3.26",
+    "metasync": "git+https://github.com/DzyubSpirit/metasync.git",
     "mkdirp": "^0.5.1"
   },
   "devDependencies": {

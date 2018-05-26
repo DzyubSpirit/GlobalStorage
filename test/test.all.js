@@ -3,7 +3,7 @@
 const metasync = require('metasync');
 
 const subtests = [
-  'memory', 'mongodb', 'localstorage.provider',
+  'memory', 'mongodb', 'localstorage.provider', 'indexeddb.provider',
 ].map(name => require('./' + name));
 
 metasync(subtests)(() => {

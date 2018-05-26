@@ -13,6 +13,7 @@ const submodules = [
   'fs.provider', 'fs.cursor',
   'mongodb.provider', 'mongodb.cursor',
   'localstorage.provider',
+  'indexeddb.provider', 'postponed.cursor',
 ];
 
 const lib = {};
