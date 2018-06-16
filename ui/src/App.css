@@ -1,0 +1,43 @@
+body {
+  padding: 15px;
+}
+
+.App {
+  text-align: center;
+}
+
+#provider-select {
+  margin: 16px;
+  font-size: 2em;
+}
+
+#query-editor {
+  margin: 16px;
+  font-size: 1em;
+}
+
+.data-table {
+  margin: 25px auto 15px auto;
+  border-spacing: 0;
+  border: 1px solid black;
+  border-collapse: collapse;
+}
+
+.data-table td,th {
+  border: 1px solid black;
+  padding: 15px;
+}
+
+.object-data:hover {
+  color: blue;
+}
+
+input[type='button'] {
+  margin: 15px;
+  padding: 5px;
+  font-size: 1.5em;
+}
+
+input[type='button']:hover {
+  background-color: #ccc;
+}
