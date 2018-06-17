@@ -4,6 +4,7 @@ const metasync = require('metasync');
 
 const subtests = [
   require('./indexeddb.provider'),
+  require('./localstorage.provider'),
 ];
 
 metasync(subtests)(() => {

@@ -95,6 +95,7 @@ const metasync = __webpack_require__(1);
 
 const subtests = [
   __webpack_require__(199),
+  __webpack_require__(221),
 ];
 
 metasync(subtests)(() => {
@@ -27308,16 +27309,31 @@ module.exports = {
 
 "use strict";
 
+/* eslint-env browser */
 
 const metatests = __webpack_require__(200);
 const metasync = __webpack_require__(1);
 const { IndexedDBProvider } = __webpack_require__(201);
 
+const clear = (provider, callback) => {
+  const tx = provider.db.transaction(provider.options.storeName, 'readwrite');
+  const store = tx.objectStore(provider.options.storeName);
+  const req = store.clear();
+  req.onsuccess = () => {
+    store.add({ idCounter: 0 }, provider.options.idLabel);
+  };
+  tx.oncomplete = () => callback(null);
+  tx.onerror = () => callback(tx.error);
+};
+
 const open = (callback) => {
   const provider = new IndexedDBProvider();
   provider.open({}, (err) => {
     if (err) return callback(err);
-    callback(null, provider);
+    clear(provider, (err) => {
+      if (err) return callback(err);
+      callback(null, provider);
+    });
   });
 };
 
@@ -27448,8 +27464,7 @@ const formatErr = (v1, v2) => 'strictSame:\n' +
         'expected: ' + JSON.stringify(v2) + '\n';
 
 const equal = (v1, v2) => {
-  if (typeof(v1) !== 'object' && v1 === v2) return true;
-  if (!v1 && v1 === v2) return true;
+  if (typeof(v1) !== 'object' || !v1 || !v2) return v1 === v2;
   const k1 = new Set(Object.keys(v1));
   const k2 = Object.keys(v2);
   if (k1.size !== k2.length) return false;
@@ -27494,8 +27509,8 @@ const submodules = [
   'remote.provider', 'remote.cursor',
   'fs.provider', 'fs.cursor',
   'mongodb.provider', 'mongodb.cursor',
-  'localstorage.provider',
-  'indexeddb.provider', 'postponed.cursor',
+  'localstorage.provider', 'indexeddb.provider', 'postponed.cursor',
+  'transactions',
 ];
 
 const lib = {};
@@ -28063,6 +28078,8 @@ var map = {
 	"./remote.cursor.js": 218,
 	"./remote.provider": 219,
 	"./remote.provider.js": 219,
+	"./transactions": 220,
+	"./transactions.js": 220,
 	"./transformations": 203,
 	"./transformations.js": 203
 };
@@ -28446,9 +28463,6 @@ common.inherits(IndexedDBProvider, StorageProvider);
 
 const completeOptions = (opts = {}) => {
   let indexedDB = null;
-  /* eslint-disable no-var */
-  var window;
-  /* eslint-enable no-var */
   if (window) {
     indexedDB = window.indexedDB || window.mozIndexedDB ||
       window.webkitIndexedDB || window.msIndexedDB || window.shimIndexedDB;
@@ -28458,6 +28472,7 @@ const completeOptions = (opts = {}) => {
       err: new Error('There is no window.indexedDb and options.indexedDb')
     };
   }
+  opts.indexedDB = opts.indexedDB || indexedDB;
   opts.databaseName = opts.databaseName || 'IndexedDBProviderDatabaseName';
   opts.storeName = opts.storeName || 'IndexedDBProviderStoreName';
   opts.idLabel = opts.idLabel || 'IndexedDBProvider_ID_Label';
@@ -28481,17 +28496,11 @@ IndexedDBProvider.prototype.open = function(options, callback) {
         const tx = this.db.transaction(this.options.storeName, 'readwrite');
         const store = tx.objectStore(this.options.storeName);
         store.add({ idCounter: 0 }, opts.idLabel);
-        tx.oncomplete = () => {
-          callback(null);
-        };
-        tx.onerror = () => {
-          callback(tx.error);
-        };
+        tx.oncomplete = () => callback(null);
+        tx.onerror = () => callback(tx.error);
       });
     };
-    request.onerror = () => {
-      callback(request.error);
-    };
+    request.onerror = () => callback(request.error);
     this.request = request;
     this.options = opts;
   });
@@ -28511,9 +28520,7 @@ IndexedDBProvider.prototype.generateId = function(callback) {
     const { idCounter } = idReq.result;
     const request = store.put({ idCounter: idCounter + 1 },
       this.options.idLabel);
-    request.onsuccess = () => {
-      callback(null, idCounter);
-    };
+    request.onsuccess = () => callback(null, idCounter);
     request.onerror = () => callback(request.error);
   };
   idReq.onerror = () => callback(idReq.error);
@@ -28865,9 +28872,6 @@ LocalstorageProvider.ID_ITEM_LABEL = '_LocalstorageProvider_item_';
 LocalstorageProvider.prototype.open = function(options = {}, callback) {
   StorageProvider.prototype.open.call(this, options, () => {
     let localStorage = null;
-    /* eslint-disable no-var */
-    var window;
-    /* eslint-enable no-var */
     if (window) localStorage = window.localStorage;
     if (!options.localStorage && !localStorage) {
       const err =
@@ -29381,6 +29385,309 @@ function RemoteProvider() {
 common.inherits(RemoteProvider, StorageProvider);
 
 module.exports = { RemoteProvider };
+
+
+/***/ }),
+/* 220 */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+const common = __webpack_require__(4);
+
+function Transaction(data) {
+  this.data = data;
+  this.delta = {};
+  this.deleteDelta = new Set();
+  this.methods = {
+    commit: this.commit.bind(this),
+    rollback: this.rollback.bind(this),
+    clone: this.clone.bind(this),
+  };
+  this.proxyMethods = {
+    get: this.get.bind(this),
+    getOwnPropertyDescriptor: this.getOwnPropertyDescriptor.bind(this),
+    ownKeys: this.ownKeys.bind(this),
+    set: this.set.bind(this),
+    deleteProperty: this.deleteProperty.bind(this),
+  };
+}
+
+Transaction.prototype.rollback = function() {
+  this.delta = {};
+  this.deleteDelta.clear();
+};
+
+Transaction.prototype.clone = function() {
+  const cloned = new Transaction(this.data);
+  Object.assign(cloned.delta, this.delta);
+  cloned.deleteDelta = new Set(this.deleteDelta);
+  return new Proxy(cloned.data, cloned.proxyMethods);
+};
+
+Transaction.prototype.commit = function() {
+  for (const key of this.deleteDelta) {
+    delete this.data[key];
+  }
+  Object.assign(this.data, this.delta);
+  this.delta = {};
+};
+
+Transaction.prototype.get = function(target, key) {
+  if (key === 'delta') return this.delta;
+  if (this.methods.hasOwnProperty(key)) return this.methods[key];
+  if (this.delta.hasOwnProperty(key)) return this.delta[key];
+  return target[key];
+};
+
+Transaction.prototype.getOwnPropertyDescriptor = function(target, key) {
+  return Object.getOwnPropertyDescriptor(
+    this.delta.hasOwnProperty(key) ? this.delta : target, key
+  );
+};
+
+Transaction.prototype.ownKeys = function() {
+  const changes = Object.keys(this.delta);
+  const keys = Object.keys(this.data).concat(changes);
+  return keys.filter((x, i, a) => a.indexOf(x) === i);
+};
+
+Transaction.prototype.set = function(target, key, val) {
+  if (target[key] === val) delete this.delta[key];
+  else this.delta[key] = val;
+  this.deleteDelta.delete(key);
+  return true;
+};
+
+Transaction.prototype.deleteProperty = function(target, prop) {
+  if (this.deleteDelta.has(prop)) return false;
+  this.deleteDelta.add(prop);
+  return true;
+};
+
+Transaction.start = (data) => {
+  const tr = new Transaction(data);
+  return new Proxy(data, tr.proxyMethods);
+};
+
+function DatasetTransaction(ds) {
+  this.dataset = ds;
+  const items = ds.map(Transaction.start);
+  Transaction.call(this, items);
+}
+
+common.inherits(DatasetTransaction, Transaction);
+
+DatasetTransaction.prototype.commit = function() {
+  const itemProxies = this.data;
+  for (const item of itemProxies) {
+    if (item.commit) item.commit();
+  }
+  this.data = this.dataset;
+  Transaction.prototype.commit.call(this);
+};
+
+DatasetTransaction.prototype.rollback = function() {
+  for (const item of this.data) {
+    if (item.rollback) item.rollback();
+  }
+  Transaction.prototype.rollback.call(this);
+};
+
+DatasetTransaction.prototype.clone = function() {
+  const cloned = new DatasetTransaction(this.dataset);
+  cloned.data = this.data.map(x => x.clone());
+  Object.assign(cloned.delta, this.delta);
+  cloned.deleteDelta = new Set(this.deleteDelta);
+  return new Proxy(cloned.data, cloned.proxyMethods);
+};
+
+DatasetTransaction.start = function(ds) {
+  const tr = new DatasetTransaction(ds);
+  return new Proxy(tr.data, tr.proxyMethods);
+};
+
+function CursorTransaction(cursor) {
+  this.cursor = cursor;
+  this.items = [cursor.jsql, cursor.dataset];
+  this.proxies = [
+    Transaction.start(cursor.jsql),
+    DatasetTransaction.start(cursor.dataset),
+  ];
+  [cursor.jsql, cursor.dataset] = this.proxies;
+  Transaction.call(this, cursor);
+}
+
+common.inherits(CursorTransaction, Transaction);
+
+CursorTransaction.start = (cursor) => {
+  const tr = new CursorTransaction(cursor);
+  return new Proxy(cursor, tr.proxyMethods);
+};
+
+CursorTransaction.prototype.commit = function() {
+  for (const proxy of this.proxies) {
+    proxy.commit();
+  }
+  [this.data.jsql, this.data.dataset] = this.items;
+  Transaction.prototype.commit.call(this);
+};
+
+CursorTransaction.prototype.rollback = function() {
+  for (const proxy of this.proxies) {
+    proxy.rollback();
+  }
+  Transaction.prototype.rollback.call(this);
+};
+
+CursorTransaction.prototype.clone = function() {
+  const cloned = new CursorTransaction(this.cursor);
+  cloned.proxies = this.proxies.map(x => x.clone());
+  Object.assign(cloned.delta, this.delta);
+  cloned.deleteDelta = new Set(this.deleteDelta);
+  return new Proxy(cloned.data, cloned.proxyMethods);
+};
+
+module.exports = { Transaction, DatasetTransaction, CursorTransaction };
+
+
+/***/ }),
+/* 221 */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+/* eslint-env browser */
+
+const metasync = __webpack_require__(1);
+const metatests = __webpack_require__(200);
+const { LocalstorageProvider } = __webpack_require__(201);
+const localStorage = window.localStorage;
+
+const open = (callback) => {
+  const provider = new LocalstorageProvider();
+  provider.open({}, (err) => {
+    if (err) return callback(err);
+    callback(null, provider);
+  });
+};
+
+const testClose = (done) => (test) => {
+  open((err, provider) => {
+    test.strictSame(err, null);
+    provider.close((err) => {
+      test.strictSame(err, null);
+      test.end('localstorage provider end');
+      done();
+    });
+  });
+};
+
+
+const testGenerateId = (done) => (test) => {
+  localStorage[LocalstorageProvider.ID_LABEL] = 0;
+  open((err, provider) => {
+    test.strictSame(err, null);
+    provider.generateId((err, id) => {
+      test.strictSame(err, null);
+      test.strictSame(id, 0);
+      provider.generateId((err, id) => {
+        test.strictSame(err, null);
+        test.strictSame(id, 1);
+        test.end('localstorage provider end');
+        done();
+      });
+    });
+  });
+};
+
+const testOperations = (done) => (test) => {
+  const obj = { name: 'qwerty' };
+  open((err, provider) => {
+    test.strictSame(err, null);
+    provider.create(obj, (err, id) => {
+      test.strictSame(err, null);
+      const expected = { name: 'qwerty', address: 'ytrewq', id };
+      const obj2 = { address: 'ytrewq' };
+      Object.assign(obj2, obj);
+      provider.update(obj2, (err) => {
+        test.strictSame(err, null);
+        provider.get(id, (err, obj3) => {
+          test.strictSame(err, null);
+          test.strictSame(obj3, expected);
+          provider.delete(id, (err) => {
+            test.strictSame(err, null);
+            provider.get(id, (err, obj4) => {
+              test.strictSame(err, null);
+              test.strictSame(typeof obj4, 'undefined');
+              test.end('localstorage provider end');
+              done();
+            });
+          });
+        });
+      });
+    });
+  });
+};
+
+const testSelect = (done) => (test) => {
+  const persons = [{
+    category: 'Person',
+    name: 'Marcus Aurelius',
+    city: 'Rome',
+    born: 121,
+  }, {
+    category: 'Person',
+    name: 'Victor Glushkov',
+    city: 'Rostov on Don',
+    born: 1923,
+  }];
+  const expected = [{
+    category: 'Person',
+    name: 'Marcus Aurelius',
+    city: 'Rome',
+    born: 121,
+  }, {
+    category: 'Person',
+    name: 'Victor Glushkov',
+    city: 'Rostov on Don',
+    born: 1923,
+  }];
+
+  open((err, provider) => {
+    test.strictSame(err, null);
+    persons.forEach((person, i) => provider.create(person, (err, id) => {
+      test.strictSame(err, null);
+      expected[i].id = id;
+    }));
+    provider.select({}).fetch((err, ds) => {
+      test.strictSame(err, null);
+      test.strictSame(ds, expected);
+      test.end('localstorage provider end');
+      done();
+    });
+  });
+};
+
+module.exports = (data, done) => {
+  metasync([
+    (data, done) => {
+      metatests.test('localstorage provider: close', testClose(done));
+    },
+    (data, done) => {
+      metatests.test('localstorage provider: generateId', testGenerateId(done));
+    },
+    (data, done) => {
+      metatests.test('localstorage provider: create, update, get, delete, get',
+        testOperations(done)
+      );
+    },
+    (data, done) => {
+      metatests.test('localstorage provider: select', testSelect(done));
+    },
+  ])(done);
+};
 
 
 /***/ })
